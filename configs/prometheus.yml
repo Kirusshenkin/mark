@@ -1,0 +1,86 @@
+# Prometheus Configuration for DCA Bot
+# This file will be used when monitoring stack is enabled
+
+global:
+  scrape_interval: 15s # Scrape targets every 15 seconds (aligned with AI decision cycle)
+  evaluation_interval: 15s # Evaluate rules every 15 seconds
+  scrape_timeout: 10s
+
+  external_labels:
+    monitor: 'crypto-trading-bot'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+# rule_files:
+#   - "alerts/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # DCA Trading Bot metrics
+  - job_name: 'dca-bot'
+    static_configs:
+      - targets: ['bot:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # PostgreSQL metrics (requires postgres_exporter)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Storage configuration
+storage:
+  tsdb:
+    path: /prometheus
+    retention:
+      time: 30d
+      size: 10GB
+
+# TODO: When implementing metrics export in the bot, add these metric groups:
+#
+# Stage 4 Metrics to Export:
+# --------------------------
+# 1. AI Decisions:
+#    - ai_decision_total{regime,approved} counter
+#    - ai_decision_confidence gauge
+#    - ai_decision_latency_seconds histogram
+#
+# 2. Policy Engine:
+#    - policy_validations_total{result} counter
+#    - policy_violations_total{type,severity} counter
+#    - policy_risk_score gauge
+#
+# 3. Circuit Breakers:
+#    - circuit_breaker_triggers_total{reason} counter
+#    - circuit_breaker_active gauge
+#
+# 4. Execution:
+#    - execution_requests_total{type,status} counter
+#    - execution_slippage_percent gauge
+#    - execution_latency_seconds histogram
+#
+# 5. Trading:
+#    - trades_total{side,symbol,strategy} counter
+#    - position_size_usdt{symbol} gauge
+#    - portfolio_value_usdt gauge
+#    - pnl_realized_usdt gauge
+#    - pnl_unrealized_usdt gauge
+#
+# 6. Risk Metrics:
+#    - risk_exposure_usdt gauge
+#    - risk_daily_loss_usdt gauge
+#    - risk_drawdown_percent gauge
+#    - risk_trades_per_hour gauge

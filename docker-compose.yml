@@ -1,0 +1,250 @@
+services:
+  # ==============================================================================
+  # LOCAL AI (Ollama) - Stage 5
+  # ==============================================================================
+  # NOTE: На M1 Mac лучше запускать Ollama локально, а не в Docker
+  # Причина: Docker на M1 не имеет прямого доступа к GPU/Metal
+  #
+  # Локальный запуск (рекомендуется для M1):
+  # 1. brew install ollama
+  # 2. ollama serve
+  # 3. ollama pull qwen2.5-coder:14b
+  # 4. Установить LOCAL_AI_URL=http://host.docker.internal:11434
+  #
+  # Docker вариант (работает, но медленнее на M1):
+  ollama:
+    image: ollama/ollama:latest
+    container_name: crypto_bot_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      # Для M1 Mac НЕ нужны GPU флаги (Docker не поддерживает Metal)
+    networks:
+      - crypto_bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: crypto_bot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-crypto_trading_bot}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    networks:
+      - crypto_bot_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-crypto_trading_bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: >
+      postgres
+      -c max_connections=100
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - GO_VERSION=1.24
+    image: crypto-trading-bot:latest
+    container_name: crypto_trading_bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # Telegram
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+
+      # Bybit
+      BYBIT_API_KEY: ${BYBIT_API_KEY}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET}
+      BYBIT_BASE_URL: ${BYBIT_BASE_URL:-https://api.bybit.com}
+
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-crypto_trading_bot}
+      DB_SSLMODE: disable
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
+      DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-5m}
+
+      # AI - Legacy (будет заменено на LOCAL_AI / CLOUD_AI)
+      AI_PROVIDER: ${AI_PROVIDER:-qwen}
+      AI_API_KEY: ${AI_API_KEY}
+      AI_BASE_URL: ${AI_BASE_URL}
+      AI_MODEL: ${AI_MODEL:-qwen-plus}
+
+      # Local AI (Ollama) - Stage 5
+      LOCAL_AI_ENABLED: ${LOCAL_AI_ENABLED:-true}
+      LOCAL_AI_URL: ${LOCAL_AI_URL:-http://ollama:11434}
+      LOCAL_AI_MODEL: ${LOCAL_AI_MODEL:-qwen2.5-coder:14b}
+
+      # Cloud AI (Moonshot) - Stage 5
+      CLOUD_AI_ENABLED: ${CLOUD_AI_ENABLED:-true}
+      CLOUD_AI_PROVIDER: ${CLOUD_AI_PROVIDER:-moonshot}
+      CLOUD_AI_URL: ${CLOUD_AI_URL:-https://api.moonshot.ai}
+      CLOUD_AI_KEY: ${CLOUD_AI_KEY}
+      CLOUD_AI_MODEL: ${CLOUD_AI_MODEL:-kimi-k2-turbo-preview}
+
+      # AI Router Configuration - Stage 5
+      AI_USE_LOCAL_FOR_CHAT: ${AI_USE_LOCAL_FOR_CHAT:-true}
+      AI_USE_LOCAL_FOR_ANALYSIS: ${AI_USE_LOCAL_FOR_ANALYSIS:-true}
+      AI_USE_CLOUD_FOR_DECISIONS: ${AI_USE_CLOUD_FOR_DECISIONS:-true}
+      AI_DECISION_MODE: ${AI_DECISION_MODE:-pilot}
+      AI_DECISION_INTERVAL: ${AI_DECISION_INTERVAL:-3600}
+
+      # Stage 4: Autonomous Trading
+      POLICY_PROFILE: ${POLICY_PROFILE:-moderate}
+
+      # Strategy
+      TRADING_SYMBOL: ${TRADING_SYMBOL:-BTCUSDT}
+      DCA_AMOUNT: ${DCA_AMOUNT:-10}
+      DCA_INTERVAL: ${DCA_INTERVAL:-24h}
+      AUTO_SELL_ENABLED: ${AUTO_SELL_ENABLED:-true}
+      AUTO_SELL_TRIGGER_PERCENT: ${AUTO_SELL_TRIGGER_PERCENT:-10}
+      AUTO_SELL_AMOUNT_PERCENT: ${AUTO_SELL_AMOUNT_PERCENT:-50}
+      PRICE_CHECK_INTERVAL: ${PRICE_CHECK_INTERVAL:-5m}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # App settings
+      TZ: ${TZ:-UTC}
+    networks:
+      - crypto_bot_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Security
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+
+  # ==============================================================================
+  # MONITORING STACK (Stage 4 - Future)
+  # ==============================================================================
+  # Uncomment when Prometheus metrics export is implemented in the bot
+  # See: internal/metrics/prometheus.go (TODO)
+  #
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: crypto_bot_prometheus
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus_data:/prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--storage.tsdb.retention.time=30d'
+  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+  #     - '--web.console.templates=/usr/share/prometheus/consoles'
+  #   networks:
+  #     - crypto_bot_network
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+  #
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: crypto_bot_grafana
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - prometheus
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+  #     - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+  #     - GF_INSTALL_PLUGINS=
+  #     - GF_SERVER_ROOT_URL=http://localhost:3000
+  #     - GF_ANALYTICS_REPORTING_ENABLED=false
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+  #     - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+  #   networks:
+  #     - crypto_bot_network
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+
+networks:
+  crypto_bot_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  ollama_data:
+    driver: local
+  # prometheus_data:
+  #   driver: local
+  # grafana_data:
+  #   driver: local

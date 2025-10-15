@@ -1,0 +1,84 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+build/
+bot
+
+# Test binary and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+testdata/
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+log/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# Docker
+.docker/
+
+# Backups
+backups/*.sql
+backups/*.dump
+backups/*.gz
+
+# Secret development files
+.claude/
+
+# CI/CD
+.github/workflows/secrets/
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Documentation build
+site/
+docs/_build/

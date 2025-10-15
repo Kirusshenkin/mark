@@ -1,0 +1,93 @@
+# Stage 4 Risk Management Policy Configuration
+#
+# Usage: Set POLICY_PROFILE environment variable to: conservative, moderate, or aggressive
+# Default: moderate
+
+risk_profiles:
+  # Conservative: Minimal risk, suitable for testing and small capital
+  conservative:
+    max_order_usdt: 50          # Maximum single order size
+    max_position_usdt: 500      # Maximum position size per asset
+    max_total_exposure: 1000    # Maximum total capital at risk
+    max_daily_loss_usdt: 50     # Stop trading if daily loss exceeds this
+    trades_per_hour: 2          # Maximum trade frequency
+    slippage_threshold: 0.5     # Max acceptable slippage %
+
+    circuit_breakers:
+      - type: drawdown
+        threshold: 10.0         # Pause if drawdown reaches 10%
+        action: pause
+
+      - type: daily_loss
+        threshold: 50           # Kill switch if daily loss >= $50
+        action: killswitch
+
+      - type: volatility
+        threshold: 5.0          # Pause if hourly volatility > 5%
+        action: pause
+
+      - type: news_negative
+        threshold: -0.8         # Pause on highly negative news
+        action: pause
+
+  # Moderate: Balanced risk/reward, suitable for most users
+  moderate:
+    max_order_usdt: 100
+    max_position_usdt: 1000
+    max_total_exposure: 3000
+    max_daily_loss_usdt: 100
+    trades_per_hour: 5
+    slippage_threshold: 1.0
+
+    circuit_breakers:
+      - type: drawdown
+        threshold: 15.0
+        action: conservative    # Switch to conservative profile
+
+      - type: daily_loss
+        threshold: 150
+        action: killswitch
+
+      - type: volatility
+        threshold: 8.0
+        action: pause
+
+      - type: news_negative
+        threshold: -0.7
+        action: conservative
+
+  # Aggressive: Higher risk, suitable for experienced traders with larger capital
+  aggressive:
+    max_order_usdt: 200
+    max_position_usdt: 2000
+    max_total_exposure: 5000
+    max_daily_loss_usdt: 200
+    trades_per_hour: 10
+    slippage_threshold: 2.0
+
+    circuit_breakers:
+      - type: drawdown
+        threshold: 20.0
+        action: conservative
+
+      - type: daily_loss
+        threshold: 300
+        action: killswitch
+
+      - type: volatility
+        threshold: 10.0
+        action: moderate
+
+      - type: news_negative
+        threshold: -0.6
+        action: pause
+
+# Notes:
+# - Circuit breaker actions:
+#   - pause: Stop trading temporarily (1 hour)
+#   - killswitch: Stop all trading until manual resume (24 hours)
+#   - conservative/moderate: Switch to safer profile
+#
+# - Slippage threshold is percentage difference from expected price
+# - Trades per hour applies to all symbols combined
+# - Drawdown calculated as: (current_value - invested) / invested * 100
