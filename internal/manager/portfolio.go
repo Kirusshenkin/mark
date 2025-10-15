@@ -9,7 +9,7 @@ import (
 	"github.com/kirillm/dca-bot/pkg/utils"
 )
 
-// PortfolioManager C?@02;O5B ?>@BD5;5< ?>;L7>20B5;O
+// PortfolioManager manages user's portfolio
 type PortfolioManager struct {
 	storage  *storage.PostgresStorage
 	exchange *exchange.BybitClient
@@ -28,7 +28,7 @@ func NewPortfolioManager(
 	}
 }
 
-// GetPortfolioSummary 2>72@0I05B A2>4:C ?> ?>@BD5;N
+// GetPortfolioSummary returns portfolio summary
 func (p *PortfolioManager) GetPortfolioSummary() (string, error) {
 	assets, err := p.storage.GetEnabledAssets()
 	if err != nil {
@@ -36,7 +36,7 @@ func (p *PortfolioManager) GetPortfolioSummary() (string, error) {
 	}
 
 	if len(assets) == 0 {
-		return "=Ê Portfolio is empty. Add assets to get started!", nil
+		return "ðŸ“Š Portfolio is empty. Add assets to get started!", nil
 	}
 
 	totalInvested := 0.0
@@ -44,7 +44,7 @@ func (p *PortfolioManager) GetPortfolioSummary() (string, error) {
 	totalRealizedProfit := 0.0
 	totalUnrealizedPnL := 0.0
 
-	summary := "=Ê **Portfolio Summary**\n\n"
+	summary := "ðŸ“Š **Portfolio Summary**\n\n"
 
 	for _, asset := range assets {
 		balance, err := p.storage.GetBalance(asset.Symbol)
@@ -90,7 +90,7 @@ func (p *PortfolioManager) GetPortfolioSummary() (string, error) {
 	return summary, nil
 }
 
-// GetAssetAllocation 2>72@0I05B @0A?@545;5=85 0:B82>2 2 ?>@BD5;5
+// GetAssetAllocation returns asset allocation in portfolio
 func (p *PortfolioManager) GetAssetAllocation() (string, error) {
 	assets, err := p.storage.GetEnabledAssets()
 	if err != nil {
@@ -120,7 +120,7 @@ func (p *PortfolioManager) GetAssetAllocation() (string, error) {
 		totalValue += value
 	}
 
-	allocation := "=È **Asset Allocation**\n\n"
+	allocation := "ðŸ“Š **Asset Allocation**\n\n"
 	for symbol, value := range assetValues {
 		percentage := (value / totalValue) * 100
 		allocation += fmt.Sprintf("%s: %.2f%% ($%.2f)\n", symbol, percentage, value)
@@ -130,7 +130,7 @@ func (p *PortfolioManager) GetAssetAllocation() (string, error) {
 	return allocation, nil
 }
 
-// SavePnLSnapshot A>E@0=O5B A=8<>: PnL 4;O 0=0;8B8:8
+// SavePnLSnapshot saves PnL snapshot for analytics
 func (p *PortfolioManager) SavePnLSnapshot(snapshotType string) error {
 	assets, err := p.storage.GetEnabledAssets()
 	if err != nil {
@@ -177,9 +177,9 @@ func (p *PortfolioManager) SavePnLSnapshot(snapshotType string) error {
 	return nil
 }
 
-// GetPerformanceMetrics 2>72@0I05B <5B@8:8 ?@>872>48B5;L=>AB8 70 ?5@8>4
+// GetPerformanceMetrics returns performance metrics for a period
 func (p *PortfolioManager) GetPerformanceMetrics(symbol string, days int) (string, error) {
-	// >;CG05< 8AB>@8G5A:85 40==K5
+	// Get historical data
 	history, err := p.storage.GetPnLHistory(symbol, "DAILY", days)
 	if err != nil {
 		return "", err
@@ -189,7 +189,7 @@ func (p *PortfolioManager) GetPerformanceMetrics(symbol string, days int) (strin
 		return fmt.Sprintf("No historical data for %s", symbol), nil
 	}
 
-	// "5:CI0O ?>78F8O
+	// Current position
 	balance, err := p.storage.GetBalance(symbol)
 	if err != nil {
 		return "", err
@@ -204,9 +204,9 @@ func (p *PortfolioManager) GetPerformanceMetrics(symbol string, days int) (strin
 	unrealizedPnL := currentValue - balance.TotalInvested
 	totalPnL := balance.RealizedProfit + unrealizedPnL
 
-	//  0AG5B <5B@8:
+	// Calculate metrics
 	metrics := fmt.Sprintf(
-		"=Ê **Performance Metrics: %s** (Last %d days)\n\n"+
+		"ðŸ“Š **Performance Metrics: %s** (Last %d days)\n\n"+
 			"Current Price: $%.2f\n"+
 			"Total Invested: $%.2f\n"+
 			"Current Value: $%.2f\n"+
@@ -234,7 +234,7 @@ func (p *PortfolioManager) GetPerformanceMetrics(symbol string, days int) (strin
 	return metrics, nil
 }
 
-// AllocateCapital @0A?@545;O5B :0?8B0; <564C 0:B820<8
+// AllocateCapital allocates capital between assets
 func (p *PortfolioManager) AllocateCapital(totalCapital float64) error {
 	assets, err := p.storage.GetEnabledAssets()
 	if err != nil {
@@ -245,7 +245,7 @@ func (p *PortfolioManager) AllocateCapital(totalCapital float64) error {
 		return fmt.Errorf("no assets to allocate capital")
 	}
 
-	// @>AB>5 @02=><5@=>5 @0A?@545;5=85
+	// Simple equal distribution
 	capitalPerAsset := totalCapital / float64(len(assets))
 
 	for _, asset := range assets {
@@ -259,9 +259,9 @@ func (p *PortfolioManager) AllocateCapital(totalCapital float64) error {
 	return nil
 }
 
-// RebalancePortfolio @510;0=A8@C5B ?>@BD5;L (>?F8>=0;L=0O DC=:F8O)
+// RebalancePortfolio rebalances portfolio (optional function)
 func (p *PortfolioManager) RebalancePortfolio() error {
 	p.logger.Info("Portfolio rebalancing requested")
-	// TODO: @50;87>20BL ;>38:C @510;0=A8@>2:8
+	// TODO: implement rebalancing logic
 	return fmt.Errorf("portfolio rebalancing not yet implemented")
 }

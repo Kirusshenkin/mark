@@ -20,12 +20,43 @@ const (
 	ModeFull   Mode = "full"   // Полная автономия
 )
 
+// Storage интерфейс для сохранения данных
+type Storage interface {
+	SaveAIDecision(decision *ai.DecisionResponse, mode string, approved bool) error
+	SavePolicyViolation(violation *policy.Violation) error
+}
+
+// DataProvider интерфейс для получения данных портфеля
+type DataProvider interface {
+	GetAllBalances() ([]Balance, error)
+	GetEnabledAssets() ([]Asset, error)
+	GetPrice(symbol string) (float64, error)
+}
+
+// Balance упрощенная структура баланса
+type Balance struct {
+	Symbol        string
+	TotalQuantity float64
+	AvgEntryPrice float64
+	TotalInvested float64
+	RealizedProfit float64
+	UnrealizedPnL float64
+}
+
+// Asset упрощенная структура актива
+type Asset struct {
+	Symbol string
+	Enabled bool
+}
+
 // Orchestrator координатор автономной торговли
 type Orchestrator struct {
 	mode          Mode
 	aiClient      *ai.DecisionClient
 	policyEngine  *policy.Engine
 	executor      *execution.Executor
+	storage       Storage
+	dataProvider  DataProvider
 	//portfolioMgr  PortfolioManager
 	//infoService   NewsService
 
@@ -47,12 +78,16 @@ func New(
 	aiClient *ai.DecisionClient,
 	policyEngine *policy.Engine,
 	executor *execution.Executor,
+	storage Storage,
+	dataProvider DataProvider,
 ) *Orchestrator {
 	return &Orchestrator{
 		mode:         mode,
 		aiClient:     aiClient,
 		policyEngine: policyEngine,
 		executor:     executor,
+		storage:      storage,
+		dataProvider: dataProvider,
 		ticker:       time.NewTicker(interval),
 		stopChan:     make(chan struct{}),
 		isRunning:    false,
@@ -115,11 +150,17 @@ func (o *Orchestrator) runDecisionCycle(ctx context.Context) error {
 	log.Printf("🧠 Starting decision cycle (mode: %s)", o.mode)
 
 	// 1. Проверяем circuit breakers
-	// TODO: implement circuit breaker check
-	// if o.circuitBreaker.IsTriggered() {
-	//     log.Println("⛔ Circuit breaker active, skipping cycle")
-	//     return nil
-	// }
+	if triggered := o.policyEngine.CheckCircuitBreakers(ctx); triggered != nil {
+		log.Printf("⛔ Circuit breaker triggered: %s", triggered.Reason)
+		log.Printf("   Paused until: %s", triggered.PausedUntil.Format("2006-01-02 15:04:05"))
+
+		// Проверяем, не истекло ли время паузы
+		if time.Now().Before(triggered.PausedUntil) {
+			log.Println("   Skipping decision cycle due to active circuit breaker")
+			return nil
+		}
+		log.Println("   Circuit breaker pause expired, resuming operations")
+	}
 
 	// 2. Собираем контекст для AI
 	request := o.gatherContext(ctx)
@@ -135,7 +176,15 @@ func (o *Orchestrator) runDecisionCycle(ctx context.Context) error {
 	log.Printf("💡 Rationale: %s", decision.Rationale)
 
 	// 4. Сохраняем решение в БД
-	// TODO: save decision to database
+	if o.storage != nil {
+		// Decision will be marked as approved after validation
+		if err := o.storage.SaveAIDecision(decision, string(o.mode), true); err != nil {
+			log.Printf("⚠️  Failed to save AI decision to database: %v", err)
+			// Continue execution даже если сохранение не удалось
+		} else {
+			log.Printf("💾 AI decision saved to database")
+		}
+	}
 
 	// 5. Валидируем и исполняем действия
 	approvedActions := 0
@@ -158,8 +207,14 @@ func (o *Orchestrator) runDecisionCycle(ctx context.Context) error {
 			log.Printf("🚫 Action rejected by policy engine:")
 			for _, v := range validation.Violations {
 				log.Printf("   - %s: %s", v.Type, v.Message)
+
+				// Сохраняем нарушение в БД
+				if o.storage != nil {
+					if err := o.storage.SavePolicyViolation(&v); err != nil {
+						log.Printf("⚠️  Failed to save policy violation to database: %v", err)
+					}
+				}
 			}
-			// TODO: save violation to DB
 			continue
 		}
 
@@ -185,40 +240,126 @@ func (o *Orchestrator) runDecisionCycle(ctx context.Context) error {
 
 // gatherContext собирает контекст для AI решения
 func (o *Orchestrator) gatherContext(ctx context.Context) ai.DecisionRequest {
-	// TODO: Implement real data gathering
-	// Для MVP возвращаем упрощенный контекст
+	var assets []ai.AssetStatus
+	var totalValueUSDT, totalInvested, totalPnL float64
+
+	// Если dataProvider не установлен, возвращаем минимальный контекст
+	if o.dataProvider == nil {
+		log.Printf("⚠️ DataProvider not set, using minimal context")
+		return o.buildMinimalContext()
+	}
+
+	// Получаем балансы из БД
+	balances, err := o.dataProvider.GetAllBalances()
+	if err != nil {
+		log.Printf("⚠️ Failed to get balances: %v, using minimal context", err)
+		return o.buildMinimalContext()
+	}
+
+	// Обрабатываем каждый баланс
+	for _, bal := range balances {
+		// Пропускаем активы с нулевым количеством
+		if bal.TotalQuantity <= 0 {
+			continue
+		}
+
+		// Получаем текущую цену актива
+		currentPrice, err := o.dataProvider.GetPrice(bal.Symbol)
+		if err != nil {
+			log.Printf("⚠️ Failed to get price for %s: %v, skipping", bal.Symbol, err)
+			continue
+		}
+
+		// Рассчитываем текущую стоимость и P&L
+		currentValue := bal.TotalQuantity * currentPrice
+		unrealizedPnL := currentValue - bal.TotalInvested
+		pnlPercent := 0.0
+		if bal.TotalInvested > 0 {
+			pnlPercent = (unrealizedPnL / bal.TotalInvested) * 100
+		}
+
+		// Добавляем актив в снапшот
+		assets = append(assets, ai.AssetStatus{
+			Symbol:        bal.Symbol,
+			Quantity:      bal.TotalQuantity,
+			AvgEntryPrice: bal.AvgEntryPrice,
+			CurrentPrice:  currentPrice,
+			InvestedUSDT:  bal.TotalInvested,
+			CurrentValue:  currentValue,
+			PnL:           unrealizedPnL + bal.RealizedProfit, // Учитываем и реализованную прибыль
+			PnLPercent:    pnlPercent,
+		})
+
+		// Накапливаем общие значения
+		totalValueUSDT += currentValue
+		totalInvested += bal.TotalInvested
+		totalPnL += unrealizedPnL + bal.RealizedProfit
+	}
+
+	// Получаем BTC цену для market conditions
+	btcPrice, err := o.dataProvider.GetPrice("BTCUSDT")
+	if err != nil {
+		log.Printf("⚠️ Failed to get BTC price: %v", err)
+		btcPrice = 0
+	}
+
+	// Рассчитываем общий процент P&L
+	totalPnLPercent := 0.0
+	if totalInvested > 0 {
+		totalPnLPercent = (totalPnL / totalInvested) * 100
+	}
+
+	// Логируем собранные данные
+	log.Printf("📊 Portfolio context: %d assets, total value: $%.2f, P&L: $%.2f (%.2f%%)",
+		len(assets), totalValueUSDT, totalPnL, totalPnLPercent)
 
 	return ai.DecisionRequest{
 		CurrentPortfolio: ai.PortfolioSnapshot{
-			Assets: []ai.AssetStatus{
-				{
-					Symbol:        "BTCUSDT",
-					Quantity:      0.01,
-					AvgEntryPrice: 65000,
-					CurrentPrice:  66000,
-					InvestedUSDT:  650,
-					CurrentValue:  660,
-					PnL:           10,
-					PnLPercent:    1.54,
-				},
-			},
-			TotalValueUSDT:  660,
-			TotalInvested:   650,
-			TotalPnL:        10,
-			TotalPnLPercent: 1.54,
+			Assets:          assets,
+			TotalValueUSDT:  totalValueUSDT,
+			TotalInvested:   totalInvested,
+			TotalPnL:        totalPnL,
+			TotalPnLPercent: totalPnLPercent,
 		},
 		MarketConditions: ai.MarketData{
-			BTCPrice:       66000,
-			BTCChange24h:   2.5,
+			BTCPrice:        btcPrice,
+			BTCChange24h:    0, // TODO: рассчитать изменение за 24ч
 			MarketSentiment: "neutral",
-			Volatility:     1.5,
+			Volatility:      0, // TODO: рассчитать волатильность
+		},
+		RecentNews: []ai.NewsSignal{}, // TODO: подключить NewsSignalRepository
+		RiskLimits: ai.RiskLimits{
+			MaxOrderUSDT:     o.getMaxOrderLimit(),
+			MaxPositionUSDT:  o.policyEngine.GetPolicy().MaxPositionUSDT,
+			MaxTotalExposure: o.policyEngine.GetPolicy().MaxTotalExposure,
+			MaxDailyLoss:     o.policyEngine.GetPolicy().MaxDailyLossUSDT,
+		},
+		Mode: string(o.mode),
+	}
+}
+
+// buildMinimalContext создает минимальный контекст для fallback
+func (o *Orchestrator) buildMinimalContext() ai.DecisionRequest {
+	return ai.DecisionRequest{
+		CurrentPortfolio: ai.PortfolioSnapshot{
+			Assets:          []ai.AssetStatus{},
+			TotalValueUSDT:  0,
+			TotalInvested:   0,
+			TotalPnL:        0,
+			TotalPnLPercent: 0,
+		},
+		MarketConditions: ai.MarketData{
+			BTCPrice:        0,
+			BTCChange24h:    0,
+			MarketSentiment: "unknown",
+			Volatility:      0,
 		},
 		RecentNews: []ai.NewsSignal{},
 		RiskLimits: ai.RiskLimits{
 			MaxOrderUSDT:     o.getMaxOrderLimit(),
-			MaxPositionUSDT:  1000,
-			MaxTotalExposure: 3000,
-			MaxDailyLoss:     100,
+			MaxPositionUSDT:  o.policyEngine.GetPolicy().MaxPositionUSDT,
+			MaxTotalExposure: o.policyEngine.GetPolicy().MaxTotalExposure,
+			MaxDailyLoss:     o.policyEngine.GetPolicy().MaxDailyLossUSDT,
 		},
 		Mode: string(o.mode),
 	}

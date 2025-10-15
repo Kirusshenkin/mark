@@ -1,6 +1,7 @@
 package exchange
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,14 +14,18 @@ import (
 	"time"
 
 	"github.com/kirillm/dca-bot/internal/domain"
+	"golang.org/x/time/rate"
 )
 
 type BybitClient struct {
-	apiKey     string
-	apiSecret  string
-	baseURL    string
-	client     *http.Client
-	recvWindow string
+	apiKey           string
+	apiSecret        string
+	baseURL          string
+	client           *http.Client
+	recvWindow       string
+	maxRetries       int
+	initialRetryDelay time.Duration
+	rateLimiter      *rate.Limiter
 }
 
 type TickerResponse struct {
@@ -60,23 +65,79 @@ type OrderResponse struct {
 }
 
 type OrderInfo struct {
-	OrderID   string
-	Symbol    string
-	Side      string
-	Price     float64
-	Quantity  float64
-	Status    string
-	CreatedAt time.Time
+	OrderID       string
+	ClientOrderID string
+	Symbol        string
+	Side          string
+	Price         float64
+	Quantity      float64
+	Status        string
+	CreatedAt     time.Time
 }
 
 func NewBybitClient(apiKey, apiSecret, baseURL string) *BybitClient {
 	return &BybitClient{
-		apiKey:     apiKey,
-		apiSecret:  apiSecret,
-		baseURL:    baseURL,
-		client:     &http.Client{Timeout: 30 * time.Second},
-		recvWindow: domain.BybitRecvWindow,
+		apiKey:           apiKey,
+		apiSecret:        apiSecret,
+		baseURL:          baseURL,
+		client:           &http.Client{Timeout: 30 * time.Second},
+		recvWindow:       domain.BybitRecvWindow,
+		maxRetries:       3,
+		initialRetryDelay: 500 * time.Millisecond,
+		// Bybit limit: 10 requests per second
+		// We use 100ms interval = 10 req/sec with burst of 10
+		rateLimiter:      rate.NewLimiter(rate.Every(100*time.Millisecond), 10),
 	}
+}
+
+// doWithRetry executes HTTP request with exponential backoff retry logic
+func (b *BybitClient) doWithRetry(req *http.Request) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+
+	for attempt := 0; attempt < b.maxRetries; attempt++ {
+		// Rate limiting: wait for permission to make request
+		if err := b.rateLimiter.Wait(context.Background()); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+
+		resp, err = b.client.Do(req)
+
+		// Success if no error and not a 5xx server error
+		if err == nil && resp.StatusCode < 500 {
+			return resp, nil
+		}
+
+		// Close response body if present before retry
+		if resp != nil {
+			resp.Body.Close()
+		}
+
+		// Don't retry on last attempt
+		if attempt == b.maxRetries-1 {
+			break
+		}
+
+		// Calculate exponential backoff: initialDelay * 2^attempt
+		backoff := b.initialRetryDelay * time.Duration(1<<uint(attempt))
+
+		// Log retry attempt (in production, use proper logger)
+		if err != nil {
+			fmt.Printf("Request failed (attempt %d/%d): %v. Retrying in %v...\n",
+				attempt+1, b.maxRetries, err, backoff)
+		} else {
+			fmt.Printf("Request failed with status %d (attempt %d/%d). Retrying in %v...\n",
+				resp.StatusCode, attempt+1, b.maxRetries, backoff)
+		}
+
+		time.Sleep(backoff)
+	}
+
+	// Return last error
+	if err != nil {
+		return nil, fmt.Errorf("request failed after %d retries: %w", b.maxRetries, err)
+	}
+	return resp, fmt.Errorf("request failed after %d retries with status %d", b.maxRetries, resp.StatusCode)
 }
 
 // GetPrice получает текущую цену актива
@@ -91,7 +152,7 @@ func (b *BybitClient) GetPrice(symbol string) (float64, error) {
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := b.client.Do(req)
+	resp, err := b.doWithRetry(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -145,7 +206,7 @@ func (b *BybitClient) GetBalance(coin string) (float64, error) {
 
 	b.setAuthHeaders(req, timestamp, signature)
 
-	resp, err := b.client.Do(req)
+	resp, err := b.doWithRetry(req)
 	if err != nil {
 		return 0, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -191,12 +252,17 @@ func (b *BybitClient) PlaceOrder(symbol, side string, quantity float64) (*OrderI
 	endpoint := "/v5/order/create"
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 
+	// Генерируем уникальный clientOrderId для идемпотентности
+	// Формат: "dca_{timestamp}_{symbol}_{side}"
+	clientOrderId := fmt.Sprintf("dca_%s_%s_%s", timestamp, symbol, side)
+
 	params := map[string]interface{}{
-		"category":  domain.BybitCategorySpot,
-		"symbol":    symbol,
-		"side":      side,
-		"orderType": domain.OrderTypeMarket,
-		"qty":       fmt.Sprintf("%.8f", quantity),
+		"category":      domain.BybitCategorySpot,
+		"symbol":        symbol,
+		"side":          side,
+		"orderType":     domain.OrderTypeMarket,
+		"qty":           fmt.Sprintf("%.8f", quantity),
+		"orderLinkId":   clientOrderId, // Для идемпотентности
 	}
 
 	jsonData, err := json.Marshal(params)
@@ -216,7 +282,7 @@ func (b *BybitClient) PlaceOrder(symbol, side string, quantity float64) (*OrderI
 	req.Header.Set("Content-Type", "application/json")
 	b.setAuthHeaders(req, timestamp, signature)
 
-	resp, err := b.client.Do(req)
+	resp, err := b.doWithRetry(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -237,12 +303,13 @@ func (b *BybitClient) PlaceOrder(symbol, side string, quantity float64) (*OrderI
 	}
 
 	return &OrderInfo{
-		OrderID:   orderResp.Result.OrderID,
-		Symbol:    symbol,
-		Side:      side,
-		Quantity:  quantity,
-		Status:    domain.StatusFilled,
-		CreatedAt: time.Now(),
+		OrderID:       orderResp.Result.OrderID,
+		ClientOrderID: clientOrderId,
+		Symbol:        symbol,
+		Side:          side,
+		Quantity:      quantity,
+		Status:        domain.StatusFilled,
+		CreatedAt:     time.Now(),
 	}, nil
 }
 

@@ -361,3 +361,14 @@ func (e *Engine) GetPolicy() *Policy {
 func (e *Engine) GetMetrics() *RiskMetrics {
 	return e.metrics
 }
+
+// CheckCircuitBreakers проверяет все circuit breakers и возвращает событие если triggered
+func (e *Engine) CheckCircuitBreakers(ctx context.Context) *CircuitBreakerEvent {
+	// Обновляем метрики перед проверкой
+	if err := e.updateMetrics(ctx); err != nil {
+		// В случае ошибки не блокируем, но логируем
+		fmt.Printf("Failed to update metrics for circuit breaker check: %v\n", err)
+	}
+
+	return e.checkCircuitBreakers(ctx)
+}

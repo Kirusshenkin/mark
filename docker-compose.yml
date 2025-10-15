@@ -92,8 +92,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      # ollama:
+      #   condition: service_healthy  # Временно отключено для быстрой проверки
     ports:
       - "8080:8080"
     environment:

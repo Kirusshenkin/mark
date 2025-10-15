@@ -43,10 +43,38 @@ type DatabaseConfig struct {
 }
 
 type AIConfig struct {
+	// Legacy fields (для обратной совместимости)
 	Provider string
 	APIKey   string
 	BaseURL  string
 	Model    string
+
+	// Stage 5: Dual-model setup
+	Local  LocalAIConfig
+	Cloud  CloudAIConfig
+	Router RouterConfig
+}
+
+type LocalAIConfig struct {
+	Enabled bool
+	URL     string
+	Model   string
+}
+
+type CloudAIConfig struct {
+	Enabled  bool
+	Provider string
+	URL      string
+	APIKey   string
+	Model    string
+}
+
+type RouterConfig struct {
+	UseLocalForChat     bool
+	UseLocalForAnalysis bool
+	UseCloudForDecisions bool
+	DecisionMode        string // shadow, pilot, full
+	DecisionInterval    int    // seconds
 }
 
 type StrategyConfig struct {
@@ -121,6 +149,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid PRICE_CHECK_INTERVAL: %w", err)
 	}
 
+	// Stage 5: Dual-model AI config
+	localAIEnabled, _ := strconv.ParseBool(getEnv("LOCAL_AI_ENABLED", "true"))
+	cloudAIEnabled, _ := strconv.ParseBool(getEnv("CLOUD_AI_ENABLED", "true"))
+	useLocalForChat, _ := strconv.ParseBool(getEnv("AI_USE_LOCAL_FOR_CHAT", "true"))
+	useLocalForAnalysis, _ := strconv.ParseBool(getEnv("AI_USE_LOCAL_FOR_ANALYSIS", "true"))
+	useCloudForDecisions, _ := strconv.ParseBool(getEnv("AI_USE_CLOUD_FOR_DECISIONS", "true"))
+	decisionInterval, _ := strconv.Atoi(getEnv("AI_DECISION_INTERVAL", "3600"))
+
 	config := &Config{
 		Telegram: TelegramConfig{
 			BotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
@@ -143,10 +179,32 @@ func Load() (*Config, error) {
 			ConnMaxLifetime: connMaxLifetime,
 		},
 		AI: AIConfig{
+			// Legacy (для обратной совместимости)
 			Provider: getEnv("AI_PROVIDER", "qwen"),
 			APIKey:   getEnv("AI_API_KEY", ""),
 			BaseURL:  getEnv("AI_BASE_URL", ""),
 			Model:    getEnv("AI_MODEL", "qwen-plus"),
+
+			// Stage 5: Dual-model setup
+			Local: LocalAIConfig{
+				Enabled: localAIEnabled,
+				URL:     getEnv("LOCAL_AI_URL", "http://localhost:11434"),
+				Model:   getEnv("LOCAL_AI_MODEL", "qwen2.5-coder:14b"),
+			},
+			Cloud: CloudAIConfig{
+				Enabled:  cloudAIEnabled,
+				Provider: getEnv("CLOUD_AI_PROVIDER", "moonshot"),
+				URL:      getEnv("CLOUD_AI_URL", "https://api.moonshot.ai"),
+				APIKey:   getEnv("CLOUD_AI_KEY", ""),
+				Model:    getEnv("CLOUD_AI_MODEL", "kimi-k2-turbo-preview"),
+			},
+			Router: RouterConfig{
+				UseLocalForChat:      useLocalForChat,
+				UseLocalForAnalysis:  useLocalForAnalysis,
+				UseCloudForDecisions: useCloudForDecisions,
+				DecisionMode:         getEnv("AI_DECISION_MODE", "pilot"),
+				DecisionInterval:     decisionInterval,
+			},
 		},
 		Strategy: StrategyConfig{
 			TradingSymbol:          getEnv("TRADING_SYMBOL", "BTCUSDT"),

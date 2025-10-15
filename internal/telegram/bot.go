@@ -7,6 +7,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/kirillm/dca-bot/internal/ai"
+	"github.com/kirillm/dca-bot/internal/ai/agents"
 	"github.com/kirillm/dca-bot/internal/exchange"
 	"github.com/kirillm/dca-bot/internal/storage"
 	"github.com/kirillm/dca-bot/internal/strategy"
@@ -19,13 +20,20 @@ type Bot struct {
 	logger           *utils.Logger
 	exchange         *exchange.BybitClient
 	storage          *storage.PostgresStorage
-	aiClient         *ai.AIClient
+	aiClient         *ai.AIClient // Legacy AI client
 	dcaStrategy      *strategy.DCAStrategy
 	autoSell         *strategy.AutoSellStrategy
 	gridStrategy     *strategy.GridStrategy
 	portfolioManager *strategy.PortfolioManager
 	orchestrator     Orchestrator // Stage 4
 	policyEngine     PolicyEngine // Stage 4
+
+	// Stage 5: Hybrid AI
+	agentRouter    *agents.AgentRouter
+	chatAgent      *agents.ChatAgent
+	analysisAgent  *agents.AnalysisAgent
+	decisionAgent  *agents.DecisionAgent
+	actionExecutor *ai.ActionExecutor
 }
 
 // Orchestrator interface for Stage 4
@@ -179,6 +187,19 @@ func (b *Bot) handleCommand(message *tgbotapi.Message) {
 	case "metrics":
 		b.handleMetrics()
 
+	// Stage 5: Hybrid AI Commands
+	case "ai_analyze":
+		b.handleAIAnalysis(message.CommandArguments())
+
+	case "ai_decision":
+		b.handleAIDecision()
+
+	case "ai_metrics":
+		b.handleAIMetrics()
+
+	case "ai_mode":
+		b.handleAIMode(message.CommandArguments())
+
 	default:
 		b.SendMessage("Unknown command. Use /help to see available commands.")
 	}
@@ -192,14 +213,35 @@ func (b *Bot) sendHelp() {
 /status - Текущая позиция и статистика
 /history - История последних сделок
 /portfolio - Обзор портфеля
+/price [SYMBOL] - Текущая цена актива
 
-🧠 УПРАВЛЕНИЕ AI РЕЖИМОМ
-/mode - Показать текущий режим
+💬 HYBRID AI (Stage 5)
+/ai_analyze [SYMBOL] - Рыночный анализ (локальный)
+/ai_decision - Стратегическое решение (облачный)
+/ai_metrics - Метрики AI агентов
+/ai_mode [shadow|pilot|full] - Режим DecisionAgent
+
+Просто пишите сообщение боту для общения с ChatAgent!
+
+🧠 АВТОНОМНЫЙ AI (Stage 4)
+/mode - Показать текущий режим Orchestrator
 /mode_shadow - Режим Тени (без сделок)
 /mode_pilot - Режим Пилота (50% лимиты)
 /mode_full - Полная Автоматизация
+/decisions - История AI решений
+/policy - Текущая политика рисков
+/metrics - Метрики рисков
 
-Примечание: AI принимает решения каждые 15 минут автоматически.
+📈 СТРАТЕГИИ
+/buy - Ручная покупка DCA
+/sell <PERCENT> - Ручная продажа
+/autosell_on - Включить Auto-Sell
+/autosell_off - Выключить Auto-Sell
+/grid_init <SYMBOL> - Инициализировать Grid
+/grid_status [SYMBOL] - Статус Grid стратегии
+
+Примечание: AI Orchestrator работает каждые 15 минут автоматически.
+DecisionAgent вызывается по команде или по расписанию.
 `
 	// Send without markdown parsing
 	message := tgbotapi.NewMessage(b.chatID, help)
@@ -321,8 +363,20 @@ func (b *Bot) handlePrice(args string) {
 	b.SendMessage(message)
 }
 
-// handleAnalysis запрашивает AI анализ рынка
+// handleAnalysis запрашивает AI анализ рынка (legacy)
 func (b *Bot) handleAnalysis() {
+	// Если есть AnalysisAgent, используем его
+	if b.analysisAgent != nil {
+		b.handleAIAnalysis("BTCUSDT")
+		return
+	}
+
+	// Legacy fallback
+	if b.aiClient == nil {
+		b.SendMessage("AI client not configured")
+		return
+	}
+
 	symbol := "BTCUSDT" // TODO: get from config
 
 	price, err := b.exchange.GetPrice(symbol)
@@ -348,8 +402,20 @@ func (b *Bot) handleAnalysis() {
 	b.SendMessage(fmt.Sprintf("🧠 AI Analysis:\n\n%s", analysis))
 }
 
-// handleAIMessage обрабатывает сообщение через AI
+// handleAIMessage обрабатывает сообщение через AI (используется для не-команд)
 func (b *Bot) handleAIMessage(text string) {
+	// Если есть AgentRouter, используем его
+	if b.agentRouter != nil {
+		b.handleAIChat(text)
+		return
+	}
+
+	// Иначе используем legacy AI client
+	if b.aiClient == nil {
+		b.SendMessage("AI client not configured")
+		return
+	}
+
 	// Получаем контекст
 	context, err := b.buildContext()
 	if err != nil {
@@ -710,7 +776,7 @@ func (b *Bot) handlePolicyStatus() {
 			"• Max Daily Loss: $%v USDT\n"+
 			"• Trades/Hour: %v\n\n"+
 			"_Configured in configs/policy.yaml_",
-		"moderate", // TODO: Get actual profile
+		"moderate",              // TODO: Get actual profile
 		100, 1000, 3000, 100, 5, // TODO: Get actual values from policy
 	)
 
